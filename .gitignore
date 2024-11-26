@@ -5,3 +5,5 @@ imports/*
 cdktf.out
 cdktf.log
 *terraform.*.tfstate*
+explanationWithConstructs.md
+explanationWithoutConstructs.md
