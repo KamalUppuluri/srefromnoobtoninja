@@ -8,13 +8,13 @@ import boto3
 
 
 
-from aws_cdk import Fn
-from aws_cdk.aws_eks import Cluster, KubernetesManifest
-from aws_cdk.aws_iam import Role, ServicePrincipal, ManagedPolicy
+#from aws_cdk import Fn
+#from aws_cdk.aws_eks import Cluster, KubernetesManifest
+#from aws_cdk.aws_iam import Role, ServicePrincipal, ManagedPolicy
 
 
 
-from kubernetes import client, config
+#from kubernetes import client, config
 from constructs import Construct
 from cdktf import App, TerraformStack, TerraformOutput, Fn
 from cdktf_cdktf_provider_aws.provider import AwsProvider
@@ -41,20 +41,84 @@ from cdktf_cdktf_provider_kubernetes.deployment import Deployment
 from cdktf_cdktf_provider_kubernetes.service import Service,ServiceSpecPort
 from cdktf_cdktf_provider_aws.lb import Lb
 from cdktf_cdktf_provider_aws import db_subnet_group
+from cdktf_cdktf_provider_aws.iam_policy import IamPolicy
 
 
 from dotenv import load_dotenv
 from eks_token import get_token
 import os
+import subprocess
+
 
 # Load environment variables from .env file
 load_dotenv()
 
+
+def run_kubectl_command(command):
+    """Run a kubectl command and return the output."""
+    try:
+        result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+        return result.stdout
+    except subprocess.CalledProcessError as e:
+        print(f"Error executing command: {e}")
+        print(f"Output: {e.output}")
+        return None
+    
+
+def create_managed_node_group(self,cluster_name, nodegroup_name, subnets, node_role_arn):
+    # Create an EKS Node Group using CDKTF
+    EksNodeGroup(self, f"{nodegroup_name}NodeGroup",
+        cluster_name=cluster_name,
+        node_group_name=nodegroup_name,
+        node_role_arn=node_role_arn,
+        subnet_ids=subnets,
+        scaling_config={
+            'min_size': 1,
+            'max_size': 3,
+            'desired_size': 2
+        },
+        instance_types=['t3.micro'],
+        ami_type='AL2_x86_64',
+        labels={
+            'role': 'worker'
+        },
+        tags={
+            'Name': f'{cluster_name}-nodegroup'
+        }
+    )    
+
+def create_managed_node_group_2(cluster_name, nodegroup_name, subnets, node_role_arn):
+    # Convert TfToken to string if necessary
+    nodegroup_name_str = Fn.tostring(nodegroup_name)
+    subnets_str = [Fn.tostring(subnet) for subnet in subnets]
+    node_role_arn_str = Fn.tostring(node_role_arn)
+    
+    # Example command to create a node group using kubectl
+    command = f"kubectl create nodegroup {nodegroup_name_str} --cluster {cluster_name} --role {node_role_arn_str} --subnets {','.join(subnets_str)}"
+    output = run_kubectl_command(command)
+    if output:
+        print(f"Managed Node Group {nodegroup_name_str} creation initiated.")
+    else:
+        print(f"Failed to create Managed Node Group {nodegroup_name_str}.")
 def get_eks_token(cluster_name):
     #eks_client = boto3.client('eks')
     #response = eks_client.get_token(clusterName=cluster_name)
     token = get_token(cluster_name=cluster_name)['status']['token']
     return token
+
+def wait_for_clusters_to_be_active(cluster_names):
+    eks_client = boto3.client('eks')
+    for cluster_name in cluster_names:
+        while True:
+            response = eks_client.describe_cluster(name=cluster_name)
+            status = response['cluster']['status']
+            if status == 'ACTIVE':
+                print(f"Cluster {cluster_name} is active.")
+                break
+            else:
+                print(f"Waiting for cluster {cluster_name} to become active. Current status: {status}")
+                time.sleep(30)  # Wait for 30 seconds before checking again
+
 
 
 def update_aws_auth_configmap_for_all_clusters_2(theClusters):
@@ -138,6 +202,12 @@ def get_current_user_role_name():
     #else:
     #    raise Exception("The current user is not using an IAM role.")
 
+# Function to get the current AWS account ID
+def get_account_id():
+    sts_client = boto3.client('sts')
+    account_id = sts_client.get_caller_identity()["Account"]
+    return account_id
+
 # Load configuration
 with open('config.json') as config_file:
     config = json.load(config_file)
@@ -158,6 +228,8 @@ class MyStack(TerraformStack):
 
         # Add the AWS provider
         AwsProvider(self, "Aws", region="us-east-1")
+        # Get the current AWS account ID
+        account_id = get_account_id()
 
 
          # Create a VPC
@@ -221,6 +293,22 @@ class MyStack(TerraformStack):
             ]
         }''')
 
+        print("account_id is :",account_id)
+        # Define the IAM policy for PassRole dynamically
+        pass_role_policy = IamPolicy(self, 'PassRolePolicy', policy=f'''{{
+            "Version": "2012-10-17",
+            "Statement": [
+                {{
+                    "Effect": "Allow",
+                    "Action": "iam:PassRole",
+                    "Resource": "arn:aws:iam::{account_id}:role/{eks_node_role.name}"
+                }}
+            ]
+        }}''')
+
+        # Attach the PassRole policy to the role used by your application
+        IamRolePolicyAttachment(self, 'PassRolePolicyAttachment', role=eks_node_role.name, policy_arn=pass_role_policy.arn)
+
         # Create a policy for S3 access
         s3_access_policy = IamPolicy(self, 'S3AccessPolicy', policy='''{
             "Version": "2012-10-17",
@@ -253,9 +341,19 @@ class MyStack(TerraformStack):
                 
             })
 
+        # Outputs
+        for alias, eks_cluster in eks_clusters.items():
+            TerraformOutput(self, f"{alias}_eks_cluster_name", value=eks_cluster.name)
+
+        #TerraformOutput(self, 'reports_bucket_name', value=reports_bucket.bucket)
+        #TerraformOutput(self, 'rds_cluster_endpoint', value=rds_cluster.endpoint)
+        #TerraformOutput(self, 'ecr_repository_url', value=ecr_repository.repository_url)
+
+        # Wait for all clusters to be active
+        #wait_for_clusters_to_be_active([cluster['name'] for cluster in config['eks_clusters']])
 
 
-        update_aws_auth_configmap_for_all_clusters_2(  cluster['name']  for cluster in config['eks_clusters'])
+        #update_aws_auth_configmap_for_all_clusters_2(  cluster['name']  for cluster in config['eks_clusters'])
         
         # Create an S3 bucket named 'reports'
         reports_bucket = S3Bucket(self, 'ReportsBucket', bucket=config['s3_bucket']['name'])
@@ -268,8 +366,8 @@ class MyStack(TerraformStack):
         )
 
         # Create a secret in AWS Secrets Manager
-        rds_password_secret = SecretsmanagerSecret(self, 'RdsPasswordSecret', name='springboot-django-rds-password')
-        SecretsmanagerSecretVersion(self, 'RdsPasswordSecretVersion', secret_id=rds_password_secret.id, secret_string=json.dumps({"password": os.getenv('RDS_PASSWORD')}))
+        #rds_password_secret = SecretsmanagerSecret(self, 'RdsPasswordSecret', name='springboot-django-rds-password')
+        #SecretsmanagerSecretVersion(self, 'RdsPasswordSecretVersion', secret_id=rds_password_secret.id, secret_string=json.dumps({"password": os.getenv('RDS_PASSWORD')}))
 
         # Create an Aurora RDS MySQL database
         rds_cluster = RdsCluster(self, 'RdsCluster', engine='aurora-mysql', master_username=config['rds']['username'], master_password=os.getenv('RDS_PASSWORD'), vpc_security_group_ids=[eks_security_group.id], db_subnet_group_name=the_db_subnet_group.name)
@@ -278,15 +376,27 @@ class MyStack(TerraformStack):
         ecr_repository = EcrRepository(self, config['ecrRepo']['name'], name=config['ecrRepo']['name'])
 
         # Create EKS node groups for each cluster
-        for alias, eks_cluster in eks_clusters.items():
-            EksNodeGroup(self, f"{alias.capitalize()}NodeGroup", cluster_name=eks_cluster.name, node_role_arn=eks_node_role.arn, subnet_ids=[subnet1.id, subnet2.id], scaling_config=config['node_group'],instance_types=["t2.micro"])
+        for cluster in config['eks_clusters']:
+            print(cluster)
+            
+        #    EksNodeGroup(self, f"{alias.capitalize()}NodeGroup", cluster_name=eks_cluster.name, node_role_arn=eks_node_role.arn, subnet_ids=[subnet1.id, subnet2.id], scaling_config=config['node_group'],instance_types=["t2.micro"])
 
+        TerraformOutput(self, 'subnets', value=','.join([subnet1.id, subnet2.id]))
+        TerraformOutput(self, 'node_role_arn', value=eks_node_role.arn)
+        
+        '''
+        node_role_arn               = "arn:aws:iam::711387112361:role/terraform-20241203193434369600000003"
+                     + subnets                     = "subnet-03c2566da24a7ae90,subnet-0e10eab65819cb0e4"
+        '''
+
+
+        
         # Retrieve EKS tokens and configure Kubernetes providers
-        for alias, eks_cluster in eks_clusters.items():
+        """ for alias, eks_cluster in eks_clusters.items():
             token = get_eks_token(eks_cluster.name)
             cert_value = Fn.base64decode(eks_cluster.certificate_authority.get(0).data)
             theProvider=KubernetesProvider(self, f"{alias.capitalize()}K8sProvider", host=eks_cluster.endpoint, token=token, cluster_ca_certificate=cert_value, alias=alias)
-            #Service(self, f"{alias.capitalize()}Service", metadata={'name': f'{alias}-service'}, spec={
+         """    #Service(self, f"{alias.capitalize()}Service", metadata={'name': f'{alias}-service'}, spec={
             #    'selector': {'app': alias},
             #    'port': [ServiceSpecPort(port=80, target_port='80')],
             #    'type': 'LoadBalancer'
@@ -296,13 +406,7 @@ class MyStack(TerraformStack):
         # Define Kubernetes services for each application
         #for alias in eks_clusters.keys():
            
-        # Outputs
-        for alias, eks_cluster in eks_clusters.items():
-            TerraformOutput(self, f"{alias}_eks_cluster_name", value=eks_cluster.name)
 
-        TerraformOutput(self, 'reports_bucket_name', value=reports_bucket.bucket)
-        TerraformOutput(self, 'rds_cluster_endpoint', value=rds_cluster.endpoint)
-        TerraformOutput(self, 'ecr_repository_url', value=ecr_repository.repository_url)
 
 app = App()
 MyStack(app, "cdktf-eks-cluster")
