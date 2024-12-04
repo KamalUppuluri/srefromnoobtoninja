@@ -212,6 +212,17 @@ def get_account_id():
 with open('config.json') as config_file:
     config = json.load(config_file)
 
+
+eksctl create nodegroup \
+  --cluster django_eks_cluster \
+  --name my-nodegroup \
+  --node-type t2.micro \
+  --nodes 2 \
+  --nodes-min 1 \
+  --nodes-max 3 \
+  --region us-east-1 \
+  --node-ami ami-094fb6db0f574f0d6 \
+  --node-volume-size 20
 class MyStack(TerraformStack):
 
     def update_aws_auth_configmap_for_all_clusters( self,clusters, currentRole):
