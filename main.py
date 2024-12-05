@@ -4,6 +4,10 @@
 import json
 import base64
 import boto3
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 
@@ -212,17 +216,6 @@ def get_account_id():
 with open('config.json') as config_file:
     config = json.load(config_file)
 
-
-eksctl create nodegroup \
-  --cluster django_eks_cluster \
-  --name my-nodegroup \
-  --node-type t2.micro \
-  --nodes 2 \
-  --nodes-min 1 \
-  --nodes-max 3 \
-  --region us-east-1 \
-  --node-ami ami-094fb6db0f574f0d6 \
-  --node-volume-size 20
 class MyStack(TerraformStack):
 
     def update_aws_auth_configmap_for_all_clusters( self,clusters, currentRole):
@@ -261,15 +254,15 @@ class MyStack(TerraformStack):
             vpc_id=vpc.id, 
             cidr_block='10.0.1.0/24', 
             availability_zone='us-east-1a',
-            map_public_ip_on_launch=True  # Enable auto-assign public IP
-        )
+            map_public_ip_on_launch=True,  # Enable auto-assign public IP
+            tags={
+            'kubernetes.io/role/elb': '1'
+        })
+        
 
-        subnet2 = Subnet(self, 'Subnet2', 
-            vpc_id=vpc.id, 
-            cidr_block='10.0.2.0/24', 
-            availability_zone='us-east-1b',
-            map_public_ip_on_launch=True  # Enable auto-assign public IP
-        )
+        subnet2 = Subnet(self, 'Subnet2', vpc_id=vpc.id, cidr_block='10.0.2.0/24', availability_zone='us-east-1b', map_public_ip_on_launch=True, tags={
+            'kubernetes.io/role/internal-elb': '1'
+        })
         # Associate the public subnets with the Route Table
         RouteTableAssociation(self, 'Subnet1RouteTableAssociation', subnet_id=subnet1.id, route_table_id=public_route_table.id)
         RouteTableAssociation(self, 'Subnet2RouteTableAssociation', subnet_id=subnet2.id, route_table_id=public_route_table.id)
@@ -345,16 +338,16 @@ class MyStack(TerraformStack):
         IamRolePolicyAttachment(self, 'EksNodeWorkerNodePolicyAttachment', role=eks_node_role.name, policy_arn='arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy')
         # Create EKS clusters for each microservice
         eks_clusters = {}
-        for cluster in config['eks_clusters']:
-            eks_clusters[cluster['alias']] = EksCluster(self, f"{cluster['alias'].capitalize()}EksCluster", name=cluster['name'], role_arn=eks_role.arn, vpc_config={
-                'subnet_ids': [subnet1.id, subnet2.id],
-                'security_group_ids': [eks_security_group.id],
+        #for cluster in config['eks_clusters']:
+            #eks_clusters[cluster['alias']] = EksCluster(self, f"{cluster['alias'].capitalize()}EksCluster", name=cluster['name'], role_arn=eks_role.arn, vpc_config={
+            #   'subnet_ids': [subnet1.id, subnet2.id],
+            #    'security_group_ids': [eks_security_group.id],
                 
-            })
+            #})
 
         # Outputs
-        for alias, eks_cluster in eks_clusters.items():
-            TerraformOutput(self, f"{alias}_eks_cluster_name", value=eks_cluster.name)
+        #for alias, eks_cluster in eks_clusters.items():
+        #    TerraformOutput(self, f"{alias}_eks_cluster_name", value=eks_cluster.name)
 
         #TerraformOutput(self, 'reports_bucket_name', value=reports_bucket.bucket)
         #TerraformOutput(self, 'rds_cluster_endpoint', value=rds_cluster.endpoint)
@@ -367,7 +360,7 @@ class MyStack(TerraformStack):
         #update_aws_auth_configmap_for_all_clusters_2(  cluster['name']  for cluster in config['eks_clusters'])
         
         # Create an S3 bucket named 'reports'
-        reports_bucket = S3Bucket(self, 'ReportsBucket', bucket=config['s3_bucket']['name'])
+        #reports_bucket = S3Bucket(self, 'ReportsBucket', bucket=config['s3_bucket']['name'])
 
         # Create a DB subnet group for the RDS instance
         the_db_subnet_group = db_subnet_group.DbSubnetGroup(self, 'DbSubnetGroup',
@@ -384,16 +377,22 @@ class MyStack(TerraformStack):
         rds_cluster = RdsCluster(self, 'RdsCluster', engine='aurora-mysql', master_username=config['rds']['username'], master_password=os.getenv('RDS_PASSWORD'), vpc_security_group_ids=[eks_security_group.id], db_subnet_group_name=the_db_subnet_group.name)
 
         # Create an ECR repository
-        ecr_repository = EcrRepository(self, config['ecrRepo']['name'], name=config['ecrRepo']['name'])
+        #ecr_repository = EcrRepository(self, config['ecrRepo']['name'], name=config['ecrRepo']['name'])
 
         # Create EKS node groups for each cluster
         for cluster in config['eks_clusters']:
-            print(cluster)
-            
-        #    EksNodeGroup(self, f"{alias.capitalize()}NodeGroup", cluster_name=eks_cluster.name, node_role_arn=eks_node_role.arn, subnet_ids=[subnet1.id, subnet2.id], scaling_config=config['node_group'],instance_types=["t2.micro"])
-
+         print(cluster)
+         try:
+          logging.info(f"Creating EKS Node Group for cluster: {cluster['alias']}")
+          # Uncomment and use the following line to create the node group
+          #EksNodeGroup(self, f"{cluster['alias'].capitalize()}NodeGroup", cluster_name=eks_clusters[cluster['alias']].name, node_role_arn=eks_node_role.arn, subnet_ids=[subnet1.id, subnet2.id], scaling_config=config['node_group'], ami_type="AL2_x86_64", instance_types=["t2.micro"])
+          logging.info(f"Successfully created EKS Node Group for cluster: {cluster['alias']}")
+         except Exception as e:
+           logging.error(f"Failed to create EKS Node Group for cluster: {cluster['alias']}. Error: {e}")
+        
         TerraformOutput(self, 'subnets', value=','.join([subnet1.id, subnet2.id]))
         TerraformOutput(self, 'node_role_arn', value=eks_node_role.arn)
+        TerraformOutput(self, 'security_groups', value=eks_security_group.id)
         
         '''
         node_role_arn               = "arn:aws:iam::711387112361:role/terraform-20241203193434369600000003"

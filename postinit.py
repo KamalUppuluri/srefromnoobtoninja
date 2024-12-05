@@ -1,49 +1,61 @@
-import boto3 
 import json
+import subprocess
+import logging
 
-with open('config.json') as config_file:
-    config = json.load(config_file)
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+def run_command(command):
+    """Run a shell command and return the output."""
+    try:
+        result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+        return result.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Error executing command: {e}")
+        logging.error(f"Output: {e.output}")
+        return None
 
-def create_managed_node_group_old(cluster_name, nodegroup_name, subnets, node_role_arn):
-    eks_client = boto3.client('eks')
+def create_eks_clusters_from_config(config_file):
+    # Load configuration
+    with open(config_file) as f:
+        config = json.load(f)
 
-    # Check if the node group already exists
-    existing_nodegroups = eks_client.list_nodegroups(clusterName=cluster_name)['nodegroups']
-    if nodegroup_name in existing_nodegroups:
-        print(f"Node group {nodegroup_name} already exists in cluster {cluster_name}.")
-        return eks_client.describe_nodegroup(clusterName=cluster_name, nodegroupName=nodegroup_name)
+    node_group_config = config.get("node_group", {})
+    desired_size = node_group_config.get("desired_size", 2)
+    max_size = node_group_config.get("max_size", 2)
+    min_size = node_group_config.get("min_size", 1)
 
-    # Create a new node group if it doesn't exist
-    response = eks_client.create_nodegroup(
-        clusterName=cluster_name,
-        nodegroupName=nodegroup_name,
-        scalingConfig={
-            'minSize': 1,
-            'maxSize': 3,
-            'desiredSize': 2
-        },
-        diskSize=20,
-        subnets=subnets,
-        instanceTypes=['t2.micro'],
-        nodeRole=node_role_arn,
-        labels={
-            'role': 'worker'
-        },
-        tags={
-            'Name': f'{cluster_name}-nodegroup'
-        }
-    )
+    for cluster in config.get("eks_clusters", []):
+        cluster_name = cluster.get("name")
+        alias = cluster.get("alias")
 
-    print(f"Managed Node Group {nodegroup_name} creation initiated.")
-    return response
+        # Generate eksctl command
+        eksctl_command = (
+            f"eksctl create cluster "
+            f"--name {cluster_name} "
+            f"--region us-west-1 "  # Specify the region as needed
+            f"--nodegroup-name {alias}-nodegroup "
+            f"--nodes {desired_size} "
+            f"--nodes-min {min_size} "
+            f"--nodes-max {max_size} "
+            f"--node-type t2.micro  --verbose 4"  # Specify the instance type as needed
+        )
 
-for cluster in config['eks_clusters']:
-            print(cluster)
-            create_managed_node_group_old(
-            cluster_name=cluster['name'],
-            nodegroup_name=cluster['name']+'-nodegroupnew2',
-            subnets=["subnet-03c2566da24a7ae90","subnet-0e10eab65819cb0e4"],
-            node_role_arn="arn:aws:iam::711387112361:role/terraform-20241203193434369600000003"
-            )
-        
+        # Run eksctl command
+        logging.info(f"Creating EKS cluster: {cluster_name}")
+        output = run_command(eksctl_command)
+        if output:
+            logging.info(f"Cluster {cluster_name} created successfully.")
+            logging.info(output)
+
+            # Output cluster details
+            logging.info(f"Cluster Name: {cluster_name}")
+            logging.info(f"Node Group Name: {alias}nodegroup")
+            logging.info(f"Desired Size: {desired_size}")
+            logging.info(f"Max Size: {max_size}")
+            logging.info(f"Min Size: {min_size}")
+        else:
+            logging.error(f"Failed to create cluster {cluster_name}.")
+
+# Example usage
+create_eks_clusters_from_config('config.json')

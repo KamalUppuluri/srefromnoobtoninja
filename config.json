@@ -1,16 +1,8 @@
 {
     "eks_clusters": [
         {
-            "name": "angular_eks_cluster",
-            "alias": "angular"
-        },
-        {
-            "name": "springboot_eks_cluster",
-            "alias": "springboot"
-        },
-        {
-            "name": "django_eks_cluster",
-            "alias": "django"
+            "name": "angularnew-cs",
+            "alias": "angular2"
         }
     ],
     "s3_bucket": {
