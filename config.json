@@ -1,18 +1,18 @@
 {
     "eks_clusters": [
         {
-            "name": "angularnewcs2",
+            "name": "angularnew-cs512",
             "alias": "angular2"
         }
     ],
     "s3_bucket": {
-        "name": "training2-trinet-reports"
+        "name": "training-trinet-reports512"
     },
     "rds": {
         "username": "admin"
     },
     "ecrRepo": {
-        "name": "appreposfortrainingtrinet"
+        "name": "appreposfortrainingtrinet512"
     },
     
     "node_group": {
