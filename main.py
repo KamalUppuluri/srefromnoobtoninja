@@ -21,13 +21,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 #from kubernetes import client, config
 from constructs import Construct
 from cdktf import App, TerraformStack, TerraformOutput, Fn
+from cdktf_cdktf_provider_aws.cloudfront_distribution import CloudfrontDistribution,CloudfrontDistributionRestrictions, CloudfrontDistributionOrigin, CloudfrontDistributionViewerCertificate
 from cdktf_cdktf_provider_aws.provider import AwsProvider
 from cdktf_cdktf_provider_aws.vpc import Vpc
 from cdktf_cdktf_provider_aws.subnet import Subnet
 from cdktf_cdktf_provider_aws.iam_role import IamRole
 from cdktf_cdktf_provider_aws.iam_policy import IamPolicy
 from cdktf_cdktf_provider_aws.iam_role_policy_attachment import IamRolePolicyAttachment
-from cdktf_cdktf_provider_aws.s3_bucket import S3Bucket
 from cdktf_cdktf_provider_aws.eks_cluster import EksCluster
 from cdktf_cdktf_provider_aws.eks_node_group import EksNodeGroup
 from cdktf_cdktf_provider_aws.ecr_repository import EcrRepository
@@ -46,6 +46,13 @@ from cdktf_cdktf_provider_kubernetes.service import Service,ServiceSpecPort
 from cdktf_cdktf_provider_aws.lb import Lb
 from cdktf_cdktf_provider_aws import db_subnet_group
 from cdktf_cdktf_provider_aws.iam_policy import IamPolicy
+from cdktf_cdktf_provider_local.file import File
+from cdktf_cdktf_provider_aws.cloudfront_distribution import CloudfrontDistribution, CloudfrontDistributionDefaultCacheBehavior, CloudfrontDistributionDefaultCacheBehaviorForwardedValues, CloudfrontDistributionDefaultCacheBehaviorForwardedValuesCookies, CloudfrontDistributionOrigin, CloudfrontDistributionOriginCustomOriginConfig, CloudfrontDistributionRestrictions,CloudfrontDistributionRestrictionsGeoRestriction, CloudfrontDistributionViewerCertificate
+from cdktf_cdktf_provider_aws.s3_bucket import S3Bucket
+from cdktf_cdktf_provider_aws.s3_bucket_website_configuration import S3BucketWebsiteConfiguration, S3BucketWebsiteConfigurationIndexDocument, S3BucketWebsiteConfigurationErrorDocument
+from cdktf_cdktf_provider_aws.s3_bucket_policy import S3BucketPolicy
+from cdktf_cdktf_provider_aws.s3_bucket_public_access_block import S3BucketPublicAccessBlock
+import os.path as Path
 
 
 from dotenv import load_dotenv
@@ -112,6 +119,7 @@ def get_eks_token(cluster_name):
 
 def wait_for_clusters_to_be_active(cluster_names):
     eks_client = boto3.client('eks')
+    #subnet1.id =>TfToken instead of the actual alue
     for cluster_name in cluster_names:
         while True:
             response = eks_client.describe_cluster(name=cluster_name)
@@ -206,6 +214,107 @@ def get_current_user_role_name():
     #else:
     #    raise Exception("The current user is not using an IAM role.")
 
+
+S3_ORIGIN_ID = "s3Origin"
+def createFrontend(self):
+    bucket = S3Bucket(self, "trinettrainingfrontendnew",
+            bucket_prefix ="trinettrainingfrontendnew",
+            tags = {
+                "hc-internet-facing": "true"
+            }
+        )
+    
+    publicAccessAllow=S3BucketPublicAccessBlock(self, "PublicAccessBlock",
+            bucket=bucket.bucket,
+            block_public_acls=False,
+            ignore_public_acls=False,
+            block_public_policy=False,
+            restrict_public_buckets=False
+        )
+
+    bucketWebsite = S3BucketWebsiteConfiguration(self, "website-configuration",
+            bucket = bucket.bucket,
+            index_document = S3BucketWebsiteConfigurationIndexDocument(suffix = "index.html"),
+            error_document = S3BucketWebsiteConfigurationErrorDocument(key = "index.html"),
+            
+        )
+
+   
+    S3BucketPolicy(self, "s3_policy",
+            bucket = bucket.bucket,
+            policy = json.dumps(
+                {
+                    "Version": "2012-10-17",
+                    "Id": "PolicyForWebsiteEndpointsPublicContent",
+                    "Statement": 
+                        {
+                            "Sid": "PublicRead",
+                            "Effect": "Allow",
+                            "Principal": "*",
+                            "Action": ["s3:GetObject"],
+                            "Resource": ["{}/*".format(bucket.arn), "{}".format(bucket.arn)],
+                        },
+                }
+            ),
+             depends_on=[publicAccessAllow]
+        )
+
+    cf = CloudfrontDistribution(self, "cf",
+            comment = "Angular frontend for the application={}".format("prod"),
+            enabled = True,
+            default_cache_behavior = CloudfrontDistributionDefaultCacheBehavior(
+                allowed_methods = [
+                    "DELETE",
+                    "GET",
+                    "HEAD",
+                    "OPTIONS",
+                    "PATCH",
+                    "POST",
+                    "PUT",
+                ],
+                cached_methods = ["GET", "HEAD"],
+                target_origin_id = S3_ORIGIN_ID,
+                viewer_protocol_policy = "redirect-to-https",
+                forwarded_values = CloudfrontDistributionDefaultCacheBehaviorForwardedValues(
+                    query_string = False,
+                    cookies = CloudfrontDistributionDefaultCacheBehaviorForwardedValuesCookies(
+                        forward = "none",
+                    ),
+                ),
+            ),
+    origin = [
+                CloudfrontDistributionOrigin(
+                    origin_id = S3_ORIGIN_ID,
+                    domain_name = bucketWebsite.website_endpoint,
+                    custom_origin_config = CloudfrontDistributionOriginCustomOriginConfig(
+                        origin_protocol_policy = "http-only",
+                        http_port = 80,
+                        https_port = 443,
+                        origin_ssl_protocols = ["TLSv1.2", "TLSv1.1", "TLSv1"],
+                    )
+                ),
+            ],
+            default_root_object = "index.html",
+            restrictions = CloudfrontDistributionRestrictions(
+                geo_restriction = CloudfrontDistributionRestrictionsGeoRestriction(
+                    restriction_type = "none" 
+                ),
+            ),
+            viewer_certificate = CloudfrontDistributionViewerCertificate(
+                cloudfront_default_certificate = True
+            )
+        )
+
+    #File(self, "env",
+    #        filename = Path.join(os.getcwd(), "frontend", "code", ".env.production.local"),
+    #        content = "S3_BUCKET_FRONTEND={bucket}\nREACT_APP_API_ENDPOINT={endPoint}".format(bucket = bucket.bucket, endPoint = apiEndPoint)
+    #    )
+
+    TerraformOutput(self, "frontend_domainname",
+            value = cf.domain_name,
+        ).add_override("value", "https://{}".format(cf.domain_name))
+    TerraformOutput(self, 'angular bucket', value=bucket.bucket)
+        
 # Function to get the current AWS account ID
 def get_account_id():
     sts_client = boto3.client('sts')
@@ -339,6 +448,7 @@ class MyStack(TerraformStack):
         # Create EKS clusters for each microservice
         eks_clusters = {}
         #for cluster in config['eks_clusters']:
+        #cdktf way of doing it
             #eks_clusters[cluster['alias']] = EksCluster(self, f"{cluster['alias'].capitalize()}EksCluster", name=cluster['name'], role_arn=eks_role.arn, vpc_config={
             #   'subnet_ids': [subnet1.id, subnet2.id],
             #    'security_group_ids': [eks_security_group.id],
@@ -349,6 +459,7 @@ class MyStack(TerraformStack):
         #for alias, eks_cluster in eks_clusters.items():
         #    TerraformOutput(self, f"{alias}_eks_cluster_name", value=eks_cluster.name)
 
+        print(subnet1.id) #TfToken 
         #TerraformOutput(self, 'reports_bucket_name', value=reports_bucket.bucket)
         #TerraformOutput(self, 'rds_cluster_endpoint', value=rds_cluster.endpoint)
         #TerraformOutput(self, 'ecr_repository_url', value=ecr_repository.repository_url)
@@ -361,6 +472,7 @@ class MyStack(TerraformStack):
         
         # Create an S3 bucket named 'reports'
         #reports_bucket = S3Bucket(self, 'ReportsBucket', bucket=config['s3_bucket']['name'])
+        #this will throw an error if the resource is already present and part of your stack
 
         # Create a DB subnet group for the RDS instance
         the_db_subnet_group = db_subnet_group.DbSubnetGroup(self, 'DbSubnetGroup',
@@ -368,6 +480,8 @@ class MyStack(TerraformStack):
             subnet_ids=[subnet1.id, subnet2.id],
             description='Subnet group for RDS instance'
         )
+         #this will throw an error if the resource is already present and part of your stack
+
 
         # Create a secret in AWS Secrets Manager
         #rds_password_secret = SecretsmanagerSecret(self, 'RdsPasswordSecret', name='springboot-django-rds-password')
@@ -389,10 +503,15 @@ class MyStack(TerraformStack):
           logging.info(f"Successfully created EKS Node Group for cluster: {cluster['alias']}")
          except Exception as e:
            logging.error(f"Failed to create EKS Node Group for cluster: {cluster['alias']}. Error: {e}")
+
+
+        # Create S3 bucket
+        createFrontend(self)
         
         TerraformOutput(self, 'subnets', value=','.join([subnet1.id, subnet2.id]))
         TerraformOutput(self, 'node_role_arn', value=eks_node_role.arn)
         TerraformOutput(self, 'security_groups', value=eks_security_group.id)
+        
         
         '''
         node_role_arn               = "arn:aws:iam::711387112361:role/terraform-20241203193434369600000003"

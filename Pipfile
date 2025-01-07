@@ -11,12 +11,12 @@ cdktf = "~=0.20.10"
 pytest = "*"
 cdktf-cdktf-provider-aws = "*"
 constructs = "*"
+cdktf-cdktf-provider-local = "*"
 cdktf-cdktf-provider-kubernetes = "*"
 boto3 = "*"
 eks-token = "*"
 python-dotenv = "*"
 kubernetes = "*"
 aws-cdk-lib = "*"
-pahud-cdktf-aws-eks = "*"
 
 [dev-packages]
